@@ -1,4 +1,4 @@
-module github.com/hui6075/mqtt-bm-latency
+module github.com/ertanden/mqtt-bm-latency
 
 go 1.15
 
