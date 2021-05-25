@@ -14,6 +14,7 @@ import (
 
 // Message describes a message
 type Message struct {
+	SeqNo     int
 	Topic     string
 	QoS       byte
 	Payload   interface{}
@@ -85,7 +86,7 @@ func main() {
 
 	var (
 		broker         = flag.String("broker", "tcp://localhost:1883", "MQTT broker endpoint as scheme://host:port")
-		topic          = flag.String("topic", "/test", "MQTT topic for outgoing messages")
+		topic          = flag.String("topic", "test", "MQTT topic for outgoing messages")
 		username       = flag.String("username", "", "MQTT username (empty if auth disabled)")
 		password       = flag.String("password", "", "MQTT password (empty if auth disabled)")
 		clientIDPrefix = flag.String("clientidprefix", "mqtt-bm-latency-", "MQTT client ID prefix")
@@ -97,6 +98,7 @@ func main() {
 		keepalive      = flag.Int("keepalive", 60, "Keep alive period in seconds")
 		format         = flag.String("format", "text", "Output format: text|json")
 		quiet          = flag.Bool("quiet", false, "Suppress logs while running")
+		finalwait      = flag.Int("finalwait", 3, "Final wait time before stopping benchmark (seconds)")
 	)
 
 	flag.Parse()
@@ -109,7 +111,6 @@ func main() {
 	subResCh := make(chan *SubResults)
 	jobDone := make(chan bool)
 	subDone := make(chan bool)
-	subCnt := 0
 
 	if !*quiet {
 		log.Printf("Starting subscribe..\n")
@@ -131,19 +132,8 @@ func main() {
 		go sub.run(subResCh, subDone, jobDone)
 	}
 
-SUBJOBDONE:
-	for {
-		select {
-		case <-subDone:
-			subCnt++
-			if subCnt == *clients {
-				if !*quiet {
-					log.Printf("all subscribe job done.\n")
-				}
-				break SUBJOBDONE
-			}
-		}
-	}
+	// wait until all subscribers are ready
+	waitSubscribersReady(*clients, *quiet, subDone)
 
 	//start publish
 	if !*quiet {
@@ -177,10 +167,10 @@ SUBJOBDONE:
 	totalTime := time.Now().Sub(start)
 	pubtotals := calculatePublishResults(pubresults, totalTime)
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < *finalwait; i++ {
 		time.Sleep(1 * time.Second)
 		if !*quiet {
-			log.Printf("Benchmark will stop after %v seconds.\n", 3-i)
+			log.Printf("Benchmark will stop after %v seconds.\n", *finalwait-i)
 		}
 	}
 
@@ -203,6 +193,22 @@ SUBJOBDONE:
 
 	if !*quiet {
 		log.Printf("All jobs done.\n")
+	}
+}
+
+func waitSubscribersReady(expectedSubscribers int, quiet bool, subDone chan bool) {
+	subCnt := 0
+	for {
+		select {
+		case <-subDone:
+			subCnt++
+			if subCnt == expectedSubscribers {
+				if quiet {
+					log.Printf("all subscribe job done.\n")
+				}
+				return
+			}
+		}
 	}
 }
 

@@ -35,9 +35,9 @@ func (c *SubClient) run(res chan *SubResults, subDone chan bool, jobDone chan bo
 
 	opts := mqtt.NewClientOptions().
 		AddBroker(c.BrokerURL).
-		SetClientID(fmt.Sprintf("%v%v-%v", c.BrokerClientIDPrefix, time.Now().UnixNano(), c.ID)).
+		SetClientID(c.BrokerClientIDPrefix + fmt.Sprintf("sub-%v-%v", time.Now().UnixNano(), c.ID)).
 		SetCleanSession(true).
-		SetAutoReconnect(true).
+		SetAutoReconnect(false).
 		SetKeepAlive(ka).
 		SetTLSConfig(&tls.Config{
 			InsecureSkipVerify: c.InsecureSkipVerify,
@@ -56,7 +56,7 @@ func (c *SubClient) run(res chan *SubResults, subDone chan bool, jobDone chan bo
 			runResults.Received++
 		}).
 		SetConnectionLostHandler(func(client mqtt.Client, reason error) {
-			log.Printf("SUBSCRIBER %v lost connection to the broker: %v. Will reconnect...\n", c.ID, reason.Error())
+			log.Printf("SUBSCRIBER %v lost connection to the broker: %v.\n", c.ID, reason.Error())
 		})
 	if c.BrokerUser != "" && c.BrokerPass != "" {
 		opts.SetUsername(c.BrokerUser)
@@ -79,7 +79,6 @@ func (c *SubClient) run(res chan *SubResults, subDone chan bool, jobDone chan bo
 	}
 
 	subDone <- true
-	//加各项统计
 	for {
 		select {
 		case <-jobDone:

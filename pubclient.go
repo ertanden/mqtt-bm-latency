@@ -29,23 +29,21 @@ type PubClient struct {
 }
 
 func (c *PubClient) run(res chan *PubResults) {
-	newMsgs := make(chan *Message)
-	pubMsgs := make(chan *Message)
-	doneGen := make(chan bool)
-	donePub := make(chan bool)
+	generatedMsgs := make(chan *Message)
+	publishedMsgs := make(chan *Message)
 	runResults := new(PubResults)
 
 	started := time.Now()
 	// start generator
-	go c.genMessages(newMsgs, doneGen)
+	go c.genMessages(generatedMsgs)
 	// start publisher
-	go c.pubMessages(newMsgs, pubMsgs, doneGen, donePub)
+	go c.pubMessages(generatedMsgs, publishedMsgs)
 
 	runResults.ID = c.ID
 	times := []float64{}
 	for {
-		select {
-		case m := <-pubMsgs:
+		m, more := <-publishedMsgs
+		if more {
 			if m.Error {
 				log.Printf("PUBLISHER %v ERROR publishing message: %v: at %v\n", c.ID, m.Topic, m.Sent.Unix())
 				runResults.Failures++
@@ -54,7 +52,7 @@ func (c *PubClient) run(res chan *PubResults) {
 				runResults.Successes++
 				times = append(times, m.Delivered.Sub(m.Sent).Seconds()*1000) // in milliseconds
 			}
-		case <-donePub:
+		} else {
 			// calculate results
 			duration := time.Now().Sub(started)
 			runResults.PubTimeMin = stats.StatsMin(times)
@@ -71,44 +69,41 @@ func (c *PubClient) run(res chan *PubResults) {
 	}
 }
 
-func (c *PubClient) genMessages(ch chan *Message, done chan bool) {
+func (c *PubClient) genMessages(generatedMsgs chan *Message) {
 	for i := 0; i < c.MsgCount; i++ {
-		ch <- &Message{
+		generatedMsgs <- &Message{
+			SeqNo: i,
 			Topic: c.PubTopic,
 			QoS:   c.PubQoS,
 			//Payload: make([]byte, c.MsgSize),
 		}
 	}
-	done <- true
+	close(generatedMsgs)
 	// log.Printf("PUBLISHER %v is done generating messages\n", c.ID)
-	return
 }
 
-func (c *PubClient) pubMessages(in, out chan *Message, doneGen, donePub chan bool) {
+func (c *PubClient) pubMessages(generatedMsgs, publishedMsgs chan *Message) {
 	onConnected := func(client mqtt.Client) {
-		ctr := 0
 		for {
-			select {
-			case m := <-in:
+			m, more := <-generatedMsgs
+			if more {
 				m.Sent = time.Now()
 				m.Payload = bytes.Join([][]byte{[]byte(strconv.FormatInt(m.Sent.UnixNano(), 10)), make([]byte, c.MsgSize)}, []byte("#@#"))
 				token := client.Publish(m.Topic, m.QoS, false, m.Payload)
-				token.Wait()
-				if token.Error() != nil {
+
+				if token.Wait() && token.Error() != nil {
 					log.Printf("PUBLISHER %v Error sending message: %v\n", c.ID, token.Error())
 					m.Error = true
 				} else {
 					m.Delivered = time.Now()
 					m.Error = false
 				}
-				out <- m
-				ctr++
-			case <-doneGen:
+				publishedMsgs <- m
+			} else {
 				if !c.Quiet {
 					log.Printf("PUBLISHER %v had connected to the broker %v and done publishing for topic: %v\n", c.ID, c.BrokerURL, c.PubTopic)
 				}
-				donePub <- true
-				client.Disconnect(250)
+				close(publishedMsgs)
 				return
 			}
 		}
@@ -118,16 +113,16 @@ func (c *PubClient) pubMessages(in, out chan *Message, doneGen, donePub chan boo
 
 	opts := mqtt.NewClientOptions().
 		AddBroker(c.BrokerURL).
-		SetClientID(fmt.Sprintf("%v%v-%v", c.BrokerClientIDPrefix, time.Now().UnixNano(), c.ID)).
+		SetClientID(c.BrokerClientIDPrefix + fmt.Sprintf("pub-%v-%v", time.Now().UnixNano(), c.ID)).
 		SetCleanSession(true).
-		SetAutoReconnect(true).
+		SetAutoReconnect(false).
 		SetOnConnectHandler(onConnected).
 		SetKeepAlive(ka).
 		SetTLSConfig(&tls.Config{
 			InsecureSkipVerify: c.InsecureSkipVerify,
 		}).
 		SetConnectionLostHandler(func(client mqtt.Client, reason error) {
-			log.Printf("PUBLISHER %v lost connection to the broker: %v. Will reconnect...\n", c.ID, reason.Error())
+			log.Printf("PUBLISHER %v lost connection to the broker: %v.\n", c.ID, reason.Error())
 		})
 	if c.BrokerUser != "" && c.BrokerPass != "" {
 		opts.SetUsername(c.BrokerUser)
@@ -135,9 +130,8 @@ func (c *PubClient) pubMessages(in, out chan *Message, doneGen, donePub chan boo
 	}
 	client := mqtt.NewClient(opts)
 	token := client.Connect()
-	token.Wait()
 
-	if token.Error() != nil {
+	if token.Wait() && token.Error() != nil {
 		log.Printf("PUBLISHER %v had error connecting to the broker: %v\n", c.ID, token.Error())
 	}
 }
