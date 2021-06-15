@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"strconv"
@@ -45,14 +46,17 @@ func (c *SubClient) run(res chan *SubResults, subDone chan bool, jobDone chan bo
 		SetDefaultPublishHandler(func(client mqtt.Client, msg mqtt.Message) {
 			recvTime := time.Now().UnixNano()
 			payload := msg.Payload()
-			i := 0
-			for ; i < len(payload)-3; i++ {
-				if payload[i] == '#' && payload[i+1] == '@' && payload[i+2] == '#' {
-					sendTime, _ := strconv.ParseInt(string(payload[:i]), 10, 64)
-					forwardLatency = append(forwardLatency, float64(recvTime-sendTime)/1000000) // in milliseconds
-					break
+			if len(payload) >= 16 {
+				sendTime := int64(binary.LittleEndian.Uint64(payload[0:8]))
+				seqNum := int64(binary.LittleEndian.Uint64(payload[8:16]))
+
+				if runResults.Received != seqNum {
+					log.Printf("SUBSCRIBER expected seqNum %v but received %v", runResults.Received, seqNum)
 				}
+
+				forwardLatency = append(forwardLatency, float64(recvTime-sendTime)/1000000) // in milliseconds
 			}
+
 			runResults.Received++
 		}).
 		SetConnectionLostHandler(func(client mqtt.Client, reason error) {

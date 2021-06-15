@@ -14,7 +14,7 @@ import (
 
 // Message describes a message
 type Message struct {
-	SeqNo     int
+	SeqNo     int64
 	Topic     string
 	QoS       byte
 	Payload   interface{}

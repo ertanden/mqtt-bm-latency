@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"strconv"
@@ -72,7 +73,7 @@ func (c *PubClient) run(res chan *PubResults) {
 func (c *PubClient) genMessages(generatedMsgs chan *Message) {
 	for i := 0; i < c.MsgCount; i++ {
 		generatedMsgs <- &Message{
-			SeqNo: i,
+			SeqNo: int64(i),
 			Topic: c.PubTopic,
 			QoS:   c.PubQoS,
 			//Payload: make([]byte, c.MsgSize),
@@ -84,11 +85,20 @@ func (c *PubClient) genMessages(generatedMsgs chan *Message) {
 
 func (c *PubClient) pubMessages(generatedMsgs, publishedMsgs chan *Message) {
 	onConnected := func(client mqtt.Client) {
+
+		if !c.Quiet {
+			log.Printf("PUBLISHER %v had connected to the broker: %v\n", c.ID, c.BrokerURL)
+		}
+
 		for {
 			m, more := <-generatedMsgs
 			if more {
 				m.Sent = time.Now()
-				m.Payload = bytes.Join([][]byte{[]byte(strconv.FormatInt(m.Sent.UnixNano(), 10)), make([]byte, c.MsgSize)}, []byte("#@#"))
+				sentTimeBytes := make([]byte, 8)
+				binary.LittleEndian.PutUint64(sentTimeBytes, uint64(m.Sent.UnixNano()))
+				seqNumBytes := make([]byte, 8)
+				binary.LittleEndian.PutUint64(seqNumBytes, uint64(m.SeqNo))
+				m.Payload = bytes.Join([][]byte{sentTimeBytes, seqNumBytes, make([]byte, c.MsgSize)}, []byte{})
 				token := client.Publish(m.Topic, m.QoS, false, m.Payload)
 
 				if token.Wait() && token.Error() != nil {
@@ -101,7 +111,7 @@ func (c *PubClient) pubMessages(generatedMsgs, publishedMsgs chan *Message) {
 				publishedMsgs <- m
 			} else {
 				if !c.Quiet {
-					log.Printf("PUBLISHER %v had connected to the broker %v and done publishing for topic: %v\n", c.ID, c.BrokerURL, c.PubTopic)
+					log.Printf("PUBLISHER %v done publishing for topic: %v\n", c.ID, c.PubTopic)
 				}
 				close(publishedMsgs)
 				return
